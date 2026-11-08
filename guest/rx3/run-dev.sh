@@ -20,12 +20,15 @@ rm -f "$RUN/rx3fb.shm"
 exec "$QEMU" \
     -machine virt,gic-version=3 -accel hvf -cpu host -smp 4 -m 2G \
     -kernel "$REPO/build/Image" -initrd "$RX3/initramfs.cpio.gz" \
-    -append "console=ttyAMA0,115200 rdinit=/init loglevel=5 virtio_blk.emmc_index=0 rx3.log=1 fbcon=map:9" \
+    -append "console=ttyAMA0,115200 rdinit=/init loglevel=5 virtio_blk.emmc_index=0 rx3.log=1 rx3.shell=1 ${RX3_KCMD_EXTRA:-} fbcon=map:9" \
     -drive if=none,id=root,file="$RUN/rootfs.ext4",format=raw -device virtio-blk-device,drive=root \
     -drive if=none,id=board,file="$RUN/board.img",format=raw -device virtio-blk-device,drive=board \
     -object memory-backend-file,id=rx3fb,mem-path="$RUN/rx3fb.shm",size=16M,share=on \
     -device ivshmem-plain,memdev=rx3fb,master=on \
     -display none \
     -qmp unix:"$RUN/qmp.sock",server=on,wait=off \
-    -netdev user,id=link0,restrict=on -device virtio-net-device,netdev=link0 \
+    -netdev user,id=link0,restrict=on,hostfwd=tcp:127.0.0.1:${RX3_GDB_PORT:-1234}-:1234 -device virtio-net-device,netdev=link0 \
+    -device virtio-serial-device \
+    -chardev socket,id=shell,path="$RUN/shell.sock",server=on,wait=off \
+    -device virtconsole,chardev=shell \
     -serial stdio -monitor none -no-reboot

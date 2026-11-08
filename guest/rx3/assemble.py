@@ -9,7 +9,8 @@ Runs inside guest/rx3/Dockerfile (bsdtar, fsck.cramfs, mke2fs). Produces:
                images/gui.tar.gz and the ISO's gui/ in /root/gui,
                images/settings.tar.gz in /root/settings, plus the board-tool
                replacements in guest/rx3/board/ (originals kept as *.orig)
-               and a /usr/etc/directfbrc for software rendering
+               a /usr/etc/directfbrc for software rendering and
+               /etc/dj-emu/board, the board identity qemu-arm reports
   board.img    a U-Boot environment at 0xC0000 (size 0x2000, CRC32 first),
                where the RX3's fw_printenv reads it in SD mode; the values
                start from the firmware's own images/fw_env.txt
@@ -39,6 +40,17 @@ disable-module=gal
 disable-module=keyboard
 disable-module=linux_input
 disable-module=ps2mouse
+"""
+
+# The board as its kernel names it in /proc/cpuinfo (qemu-arm reads this file;
+# qemu/patches/22-linux-user-xdj-rx3.patch). The player checks Revision: an
+# i.MX6 Quad (0x63xxx) with board bits 0x700, IMX_BOARD_REV_8, which Pioneer's
+# board file and the player's SystemStats::BOARD_REV_RX3 both use for the RX3.
+BOARD_ID = """\
+Cpu=cortex-a9
+Hardware=Freescale i.MX 6Quad SABRE Smart Device Board
+Revision=63712
+Serial=0000000000000000
 """
 
 # Overrides on top of images/fw_env.txt. aplstart=on lets apl_start launch the
@@ -105,6 +117,10 @@ def main():
             os.rename(dst, dst + ".orig")
         shutil.copy(os.path.join(BOARD, tool), dst)
         os.chmod(dst, 0o755)
+
+    os.makedirs(os.path.join(root, "etc", "dj-emu"), exist_ok=True)
+    with open(os.path.join(root, "etc", "dj-emu", "board"), "w") as f:
+        f.write(BOARD_ID)
 
     # This DirectFB build reads /usr/etc/directfbrc (its sysconfdir).
     os.makedirs(os.path.join(root, "usr", "etc"), exist_ok=True)

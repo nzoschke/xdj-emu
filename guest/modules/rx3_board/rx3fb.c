@@ -10,9 +10,18 @@
  * Its memory is QEMU's ivshmem-plain BAR 2, a file the host maps too
  * (the same transport as the CDJ jog LCD). Layout of that file:
  *
- *   0x0000  struct rx3fb_header (below), little-endian
+ *   0x0000  struct rx3fb_header (below), little-endian, written by the guest
+ *   0x0800  struct rx3fb_touch, written by the host: the touch panel
  *   0x1000  pixels: yres_virtual rows of `stride` bytes; the visible frame
  *           starts at row `yoffset`
+ *
+ * Touch: the RX3's resistive panel is read by a TSC2007 that Pioneer's
+ * tsc2007_i2c driver exposes as /dev/tsc2007_2-0048: read() returns the
+ * latest struct ts_data { bool touch; u16 x, y; } (6 bytes on ARM32), poll()
+ * wakes when it changes, and ioctls 'k' 0/1 set the poll period and the
+ * maximum resistance. This module provides that device and feeds it from
+ * the host's rx3fb_touch: x and y in LCD pixels, with x reported mirrored
+ * (1279 - x) as the panel is wired.
  *
  * The host reads the header, waits for `generation` to be even (it is odd
  * while the mode or the pan offset changes) and converts from `bpp` and the
@@ -22,6 +31,11 @@
 #include <linux/pci.h>
 #include <linux/fb.h>
 #include <linux/io.h>
+#include <linux/miscdevice.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
+#include <linux/poll.h>
+#include <linux/uaccess.h>
 
 #define RX3FB_MAGIC 0x46335852	/* "RX3F" */
 #define RX3FB_VERSION 1
@@ -42,12 +56,40 @@ struct rx3fb_header {
 	u8 red_off, red_len, green_off, green_len, blue_off, blue_len, _pad[2];
 };
 
+#define RX3FB_TOUCH 0x800
+
+/* Written by the host. seq changes on every update; even values only. */
+struct rx3fb_touch {
+	__le32 seq;
+	__le32 down;
+	__le32 x;	/* LCD pixels, 0..1279 */
+	__le32 y;	/* LCD pixels, 0..799 */
+};
+
+/* Pioneer's struct ts_data as the ARM32 player lays it out. */
+struct ts_data32 {
+	u8 touch;
+	u8 _pad;
+	__u16 x, y;
+} __packed;
+
 struct rx3fb {
 	struct fb_info *info;
 	void *mem;
 	struct rx3fb_header *hdr;
+	struct rx3fb_touch *touch;
 	u32 pseudo_palette[16];
+	struct task_struct *touch_thread;
+	struct mutex ts_lock;
+	wait_queue_head_t ts_wait;
+	struct ts_data32 ts;
+	bool ts_detected;
+	u32 poll_period;
+	u16 max_rt;
+	struct miscdevice ts_misc;
 };
+
+static struct rx3fb *the_rx3fb;
 
 static void rx3fb_publish(struct rx3fb *p)
 {
@@ -161,6 +203,118 @@ static const struct fb_ops rx3fb_ops = {
 	.fb_blank = rx3fb_blank,
 };
 
+/* ---- /dev/tsc2007_2-0048 ------------------------------------------------ */
+
+#define TSC2007_IOC_MAGIC 'k'
+
+static int rx3fb_touch_thread(void *data)
+{
+	struct rx3fb *p = data;
+	u32 last = 0;
+
+	while (!kthread_should_stop()) {
+		u32 seq = le32_to_cpu(READ_ONCE(p->touch->seq));
+
+		if (seq != last && !(seq & 1)) {
+			struct ts_data32 t = { 0 };
+			u32 x, y;
+
+			smp_rmb();
+			x = min_t(u32, le32_to_cpu(READ_ONCE(p->touch->x)), RX3FB_W - 1);
+			y = min_t(u32, le32_to_cpu(READ_ONCE(p->touch->y)), RX3FB_H - 1);
+			t.touch = !!le32_to_cpu(READ_ONCE(p->touch->down));
+			t.x = RX3FB_W - 1 - x;
+			t.y = y;
+			last = seq;
+			mutex_lock(&p->ts_lock);
+			if (!t.touch) {
+				/* Like the driver: lifting keeps the last position. */
+				t.x = p->ts.x;
+				t.y = p->ts.y;
+			}
+			if (memcmp(&t, &p->ts, sizeof(t))) {
+				p->ts = t;
+				p->ts_detected = true;
+			}
+			mutex_unlock(&p->ts_lock);
+			wake_up_interruptible(&p->ts_wait);
+		}
+		usleep_range(4000, 6000);
+	}
+	return 0;
+}
+
+static int ts_open(struct inode *inode, struct file *f)
+{
+	pr_notice("rx3fb: %s opened the touch panel\n", current->comm);
+	return 0;
+}
+
+static ssize_t ts_read(struct file *f, char __user *buf, size_t n, loff_t *pos)
+{
+	struct rx3fb *p = the_rx3fb;
+	ssize_t ret;
+
+	if (n > sizeof(p->ts))
+		n = sizeof(p->ts);
+	mutex_lock(&p->ts_lock);
+	ret = copy_to_user(buf, &p->ts, n) ? -EFAULT : n;
+	p->ts_detected = false;
+	mutex_unlock(&p->ts_lock);
+	return ret;
+}
+
+static ssize_t ts_write(struct file *f, const char __user *buf, size_t n, loff_t *pos)
+{
+	return -EFAULT;	/* as the driver: not supported */
+}
+
+static __poll_t ts_poll(struct file *f, poll_table *wait)
+{
+	struct rx3fb *p = the_rx3fb;
+
+	poll_wait(f, &p->ts_wait, wait);
+	return READ_ONCE(p->ts_detected) ? (EPOLLIN | EPOLLRDNORM) : 0;
+}
+
+static long ts_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+{
+	struct rx3fb *p = the_rx3fb;
+	void __user *up = (void __user *)arg;
+	u32 v32;
+	u16 v16;
+
+	if (_IOC_TYPE(cmd) != TSC2007_IOC_MAGIC)
+		return -ENOTTY;
+	switch (cmd) {
+	case _IOR(TSC2007_IOC_MAGIC, 0, __u32):
+		return put_user(p->poll_period, (u32 __user *)up);
+	case _IOW(TSC2007_IOC_MAGIC, 0, __u32):
+		if (get_user(v32, (u32 __user *)up))
+			return -EFAULT;
+		p->poll_period = v32;
+		return 0;
+	case _IOR(TSC2007_IOC_MAGIC, 1, __u16):
+		return put_user(p->max_rt, (u16 __user *)up);
+	case _IOW(TSC2007_IOC_MAGIC, 1, __u16):
+		if (get_user(v16, (u16 __user *)up))
+			return -EFAULT;
+		p->max_rt = v16;
+		return 0;
+	}
+	return -ENOTTY;
+}
+
+static const struct file_operations ts_fops = {
+	.owner = THIS_MODULE,
+	.open = ts_open,
+	.read = ts_read,
+	.write = ts_write,
+	.poll = ts_poll,
+	.unlocked_ioctl = ts_ioctl,
+	.llseek = no_llseek,
+};
+
 static int rx3fb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	resource_size_t start, len;
@@ -229,6 +383,28 @@ static int rx3fb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto err;
 	pci_set_drvdata(pdev, info);
+
+	p->touch = p->mem + RX3FB_TOUCH;
+	mutex_init(&p->ts_lock);
+	init_waitqueue_head(&p->ts_wait);
+	p->poll_period = 10;
+	p->max_rt = 0xffff;
+	the_rx3fb = p;
+	p->ts_misc = (struct miscdevice){
+		.minor = MISC_DYNAMIC_MINOR, .name = "tsc2007_2-0048", .fops = &ts_fops, .mode = 0666,
+	};
+	ret = misc_register(&p->ts_misc);
+	if (ret) {
+		unregister_framebuffer(info);
+		goto err;
+	}
+	p->touch_thread = kthread_run(rx3fb_touch_thread, p, "rx3fb_touch");
+	if (IS_ERR(p->touch_thread)) {
+		ret = PTR_ERR(p->touch_thread);
+		misc_deregister(&p->ts_misc);
+		unregister_framebuffer(info);
+		goto err;
+	}
 	fb_info(info, "XDJ-RX3 LCD %ux%u, %llu KiB shared with the host\n",
 		RX3FB_W, RX3FB_H, (unsigned long long)len / 1024);
 	return 0;
@@ -241,7 +417,11 @@ err:
 static void rx3fb_remove(struct pci_dev *pdev)
 {
 	struct fb_info *info = pci_get_drvdata(pdev);
+	struct rx3fb *p = info->par;
 
+	kthread_stop(p->touch_thread);
+	misc_deregister(&p->ts_misc);
+	the_rx3fb = NULL;
 	unregister_framebuffer(info);
 	framebuffer_release(info);
 	pci_release_region(pdev, 2);

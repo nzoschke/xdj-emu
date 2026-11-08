@@ -2,7 +2,8 @@
 //
 // RX3View: a bring-up window on the XDJ-RX3 guest's LCD, before the app can
 // show it. Maps the rx3fb shared file (guest/modules/rx3_board/rx3fb.c) and
-// redraws it about 30 times a second. View only.
+// redraws it about 30 times a second. Mouse clicks and drags are touches on
+// the RX3's touch panel (the rx3fb_touch slot at 0x800).
 //
 //   xcrun swiftc -O -o build/rx3/RX3View guest/rx3/viewer/RX3View.swift
 //   build/rx3/RX3View build/rx3/run/rx3fb.shm
@@ -16,17 +17,31 @@ final class LCD {
     var rgba = [UInt32](repeating: 0, count: 1280 * 800)
 
     init?(path: String) {
-        let fd = open(path, O_RDONLY)
+        let fd = open(path, O_RDWR)
         guard fd >= 0 else { return nil }
         var st = stat()
         fstat(fd, &st)
         size = Int(st.st_size)
-        guard let p = mmap(nil, size, PROT_READ, MAP_SHARED, fd, 0), p != MAP_FAILED else { return nil }
+        guard size >= 0x1000,
+              let p = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0), p != MAP_FAILED
+        else { return nil }
         base = p
         close(fd)
     }
 
     func u32(_ off: Int) -> UInt32 { base.load(fromByteOffset: off, as: UInt32.self) }
+
+    /// Publishes a touch (LCD pixels) in the rx3fb_touch slot: fields first,
+    /// then the sequence number, which stays even.
+    func touch(down: Bool, x: Int, y: Int) {
+        let t = base + 0x800
+        let seq = t.load(as: UInt32.self)
+        t.storeBytes(of: down ? 1 : 0, toByteOffset: 4, as: UInt32.self)
+        t.storeBytes(of: UInt32(max(0, min(1279, x))), toByteOffset: 8, as: UInt32.self)
+        t.storeBytes(of: UInt32(max(0, min(799, y))), toByteOffset: 12, as: UInt32.self)
+        OSMemoryBarrier()
+        t.storeBytes(of: (seq | 1) &+ 1, as: UInt32.self)
+    }
     func u8(_ off: Int) -> UInt8 { base.load(fromByteOffset: off, as: UInt8.self) }
 
     /// The visible frame as an image, or nil before the guest has set a mode.
@@ -85,6 +100,26 @@ final class View: NSView {
             return
         }
         NSGraphicsContext.current?.cgContext.draw(image, in: bounds)
+    }
+
+    private func lcdPoint(_ event: NSEvent) -> (Int, Int) {
+        let p = convert(event.locationInWindow, from: nil)
+        return (Int(p.x / bounds.width * 1280), Int((1 - p.y / bounds.height) * 800))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let (x, y) = lcdPoint(event)
+        lcd?.touch(down: true, x: x, y: y)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let (x, y) = lcdPoint(event)
+        lcd?.touch(down: true, x: x, y: y)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let (x, y) = lcdPoint(event)
+        lcd?.touch(down: false, x: x, y: y)
     }
 
     @objc func tick() {

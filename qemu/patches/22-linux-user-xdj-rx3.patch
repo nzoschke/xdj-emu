@@ -1,5 +1,81 @@
+diff --git a/linux-user/arm/target_proc.h b/linux-user/arm/target_proc.h
+index a28d723..6dd7f91 100644
+--- a/linux-user/arm/target_proc.h
++++ b/linux-user/arm/target_proc.h
+@@ -91,10 +91,36 @@ static int open_cpuinfo(CPUArchState *cpu_env, int fd)
+     }
+ 
+     if (arch < 8) {
+-        dprintf(fd, "Hardware\t: QEMU v%s %s\n", QEMU_VERSION,
+-                cpu->dtb_compatible ? : "");
+-        dprintf(fd, "Revision\t: 0000\n");
+-        dprintf(fd, "Serial\t\t: 0000000000000000\n");
++        /*
++         * dj-emu: an emulated board can name itself. If the guest root has
++         * /etc/dj-emu/board, its "Hardware=", "Revision=" and "Serial="
++         * lines replace these three, as the board's own kernel would report
++         * them (the XDJ-RX3 player checks Revision for its board). Every
++         * other line still describes the emulated CPU.
++         */
++        char hw[128] = "", rev[32] = "0000", serial[32] = "0000000000000000";
++        FILE *f = fopen("/etc/dj-emu/board", "r");
++
++        snprintf(hw, sizeof(hw), "QEMU v%s %s", QEMU_VERSION,
++                 cpu->dtb_compatible ? : "");
++        if (f) {
++            char line[160];
++
++            while (fgets(line, sizeof(line), f)) {
++                line[strcspn(line, "\r\n")] = 0;
++                if (!strncmp(line, "Hardware=", 9)) {
++                    pstrcpy(hw, sizeof(hw), line + 9);
++                } else if (!strncmp(line, "Revision=", 9)) {
++                    pstrcpy(rev, sizeof(rev), line + 9);
++                } else if (!strncmp(line, "Serial=", 7)) {
++                    pstrcpy(serial, sizeof(serial), line + 7);
++                }
++            }
++            fclose(f);
++        }
++        dprintf(fd, "Hardware\t: %s\n", hw);
++        dprintf(fd, "Revision\t: %s\n", rev);
++        dprintf(fd, "Serial\t\t: %s\n", serial);
+     }
+     return 0;
+ }
+diff --git a/linux-user/main.c b/linux-user/main.c
+index 86d04cc..1919a99 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -790,6 +790,26 @@ int main(int argc, char **argv, char **envp)
+         optind++;
+     }
+ 
++    if (cpu_model == NULL) {
++        /*
++         * dj-emu: an emulated board can name its CPU in /etc/dj-emu/board
++         * ("Cpu=cortex-a9" for the XDJ-RX3's i.MX6 Quad); QEMU_CPU and -cpu
++         * still take precedence.
++         */
++        FILE *board = fopen("/etc/dj-emu/board", "r");
++
++        if (board) {
++            char line[160];
++
++            while (fgets(line, sizeof(line), board)) {
++                line[strcspn(line, "\r\n")] = 0;
++                if (!strncmp(line, "Cpu=", 4) && line[4]) {
++                    cpu_model = g_strdup(line + 4);
++                }
++            }
++            fclose(board);
++        }
++    }
+     if (cpu_model == NULL) {
+         cpu_model = get_elf_cpu_model(get_elf_eflags(execfd));
+     }
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index d3d9fff..15444c4 100644
+index d3d9fff..738b846 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
 @@ -1365,8 +1365,16 @@ static abi_long do_select(int n,
@@ -27,7 +103,7 @@ index d3d9fff..15444c4 100644
  
 +/*
 + * dj-emu: the Pioneer XDJ-RX3 board drivers (subucom_spi, subucom_spi_rdy:
-+ * magic 'p'; gpiodrv: magic 0xF1). Their command encoding is the generic one
++ * magic 'p'; gpiodrv: magic 0xF1; tsc2007_i2c: magic 'k'). Their command encoding is the generic one
 + * on ARM and AArch64, so the number passes through. Arguments are plain
 + * buffers in the same layout on both, except that
 + *   - SUBUCOM_IOC_MESSAGE (nr 0) holds struct subucom_ioc_transfer, whose
@@ -116,7 +192,7 @@ index d3d9fff..15444c4 100644
  /* ??? Implement proper locking for ioctls.  */
  /* do_ioctl() Must return target values and target errnos. */
  static abi_long do_ioctl(int fd, int cmd, abi_long arg)
-@@ -5683,6 +5779,39 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+@@ -5683,6 +5779,44 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
      int target_size;
      void *argptr;
  
@@ -139,6 +215,11 @@ index d3d9fff..15444c4 100644
 +            _IOW(DJEMU_SUBUCOM_MAGIC, 6, uint8_t),
 +            _IOR(DJEMU_SUBUCOM_MAGIC, 7, uint32_t),
 +            _IOW(DJEMU_SUBUCOM_MAGIC, 7, uint32_t),
++            /* tsc2007_i2c: poll period, maximum resistance */
++            _IOR('k', 0, uint32_t),
++            _IOW('k', 0, uint32_t),
++            _IOR('k', 1, uint16_t),
++            _IOW('k', 1, uint16_t),
 +        };
 +        unsigned type = ((unsigned)cmd >> _IOC_TYPESHIFT) & _IOC_TYPEMASK;
 +        size_t i;

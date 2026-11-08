@@ -50,6 +50,22 @@ done
 [ -n "$root" ] || { echo "dj-emu rx3: no root disk"; ls -l /sys/block; exec sh; }
 echo "dj-emu rx3: root $root; board $( [ -b /dev/mmcblk0 ] && echo /dev/mmcblk0 || echo missing)"
 
+# What Pioneer's own initramfs does before switch_root (initramfs/init in the
+# RX3 GPL package): bring up the network device and loopback. The player's
+# local database server (edb_streamd) talks over localhost.
+ifconfig eth0 up 2>/dev/null || true
+ifconfig lo up
+# Bring-up (rx3.gdb=1): the address QEMU's user-mode network forwards the
+# host's gdb port to (run-dev.sh), beside whatever AutoIP picks.
+grep -q 'rx3.gdb=1' /proc/cmdline && ifconfig eth0:9 10.0.2.15 netmask 255.255.255.0 up
+
+# Bring-up (rx3.shell=1): a shell in the RX3 root on the virtio console
+# (hvc0), which run-dev.sh exposes as RUN/shell.sock. Started chrooted
+# before switch_root, so it lives in the same root as the firmware.
+if grep -q 'rx3.shell=1' /proc/cmdline && [ -c /dev/hvc0 ]; then
+    chroot /newroot /bin/sh -c 'while :; do /bin/sh -i < /dev/hvc0 > /dev/hvc0 2>&1; sleep 1; done' &
+fi
+
 # Keep binfmt_misc mounted: its registrations live with the mount, so
 # unmounting it would drop qemu-arm. /proc and /sys move into the new root.
 mkdir -p /newroot/proc /newroot/sys

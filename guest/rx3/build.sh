@@ -55,7 +55,7 @@ echo "[rx3] building initramfs..."
 run '
     root=/tmp/initramfs; mkdir -p $root/{bin,dev,proc,sys,newroot,usr/libexec}
     cp /bin/busybox $root/bin/busybox
-    for applet in sh mount umount mkdir mknod switch_root sleep cat echo ls ln grep insmod; do
+    for applet in sh mount umount mkdir mknod switch_root sleep cat echo ls ln grep insmod ifconfig chroot; do
         ln -s busybox $root/bin/$applet
     done
     cp /out/qemu-arm $root/usr/libexec/qemu-arm

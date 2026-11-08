@@ -164,6 +164,14 @@ static int chan_thread(void *data)
 	return 0;
 }
 
+static int chan_open(struct inode *inode, struct file *f)
+{
+	struct chan *c = chan_of(f);
+
+	pr_notice("rx3_board: %s opened %s\n", current->comm, c->name);
+	return 0;
+}
+
 static ssize_t chan_read(struct file *f, char __user *buf, size_t n, loff_t *pos)
 {
 	struct chan *c = chan_of(f);
@@ -259,6 +267,9 @@ static long chan_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 				memset(c->rx_old, 0, sizeof(c->rx_old));
 				c->rx_detected = false;
 			}
+			if (!!v != c->timer_on)
+				pr_notice("rx3_board: %s timer %s (interval %u ms, rx %u bytes)\n",
+					  c->name, v ? "on" : "off", c->interval_ms, c->rx_bytes);
 			WRITE_ONCE(c->timer_on, v);
 		}
 		break;
@@ -326,6 +337,7 @@ static long chan_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 static const struct file_operations chan_fops = {
 	.owner = THIS_MODULE,
+	.open = chan_open,
 	.read = chan_read,
 	.write = chan_write,
 	.poll = chan_poll,
