@@ -5,6 +5,7 @@ mod fit;
 pub mod initramfs;
 pub mod initramfs_guest;
 pub mod luks;
+pub mod rx3;
 
 pub use extract::{
     extract_boot_ramdisk, extract_kernel, patch_kernel_smc_to_hvc, read_cabinet_image,
