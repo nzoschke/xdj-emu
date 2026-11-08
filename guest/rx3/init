@@ -1,0 +1,54 @@
+#!/bin/sh
+# dj-emu XDJ-RX3 boot shim (AArch64 busybox). Mounts the RX3's own root
+# filesystem, registers qemu-arm for ARM32 ELF binaries and hands PID 1 to the
+# RX3's /sbin/init, so the firmware boots through its own inittab, rcS and
+# apl_start.
+#
+# Disks (virtio-blk, in QEMU argv order):
+#   rootfs.ext4  the RX3 root filesystem (label rx3root, an sd* node)
+#   board.img    U-Boot environment at 0xC0000, /dev/mmcblk0, where the
+#                RX3's fw_printenv (SD mode) reads it; last on QEMU's argv
+set -e
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+echo "dj-emu rx3: boot shim"
+
+# ARM32 EABI ELF executables and shared objects -> qemu-arm. F: the kernel
+# opens the interpreter now, so it keeps working inside the ARM-only root.
+mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+printf '%s' ':qemu-arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/libexec/qemu-arm:F' \
+    > /proc/sys/fs/binfmt_misc/register
+echo "dj-emu rx3: qemu-arm registered"
+
+# dj-emu's kernel names virtio disks like the hardware (01-virtio-blk-naming):
+# the first disk probed (the last on QEMU's argv: board.img) is mmcblk<N>,
+# with N = virtio_blk.emmc_index (0 here, which is where the RX3's
+# fw_printenv looks), and the others are sd*.
+root=""; n=0
+while [ -z "$root" ]; do
+    # Only the root disk carries a filesystem; board.img is raw.
+    for d in /dev/sd? /dev/mmcblk?; do
+        [ -b "$d" ] || continue
+        if mount -t ext4 -o rw,noatime "$d" /newroot 2>/dev/null; then
+            if [ -x /newroot/sbin/init ]; then root=$d; break; fi
+            umount /newroot
+        fi
+    done
+    n=$((n + 1)); [ $n -gt 50 ] && break
+    [ -n "$root" ] || sleep 0.1
+done
+[ -n "$root" ] || { echo "dj-emu rx3: no root disk"; ls -l /sys/block; exec sh; }
+echo "dj-emu rx3: root $root; board $( [ -b /dev/mmcblk0 ] && echo /dev/mmcblk0 || echo missing)"
+
+# The firmware's /dev (devtmpfs carries mmcblk0 already).
+mount -t devtmpfs devtmpfs /newroot/dev
+# Keep binfmt_misc mounted: its registrations live with the mount, so
+# unmounting it would drop qemu-arm. /proc and /sys move into the new root.
+mkdir -p /newroot/proc /newroot/sys
+mount --move /proc /newroot/proc
+mount --move /sys /newroot/sys
+umount /dev
+
+echo "dj-emu rx3: starting the RX3 init"
+exec switch_root /newroot /sbin/init

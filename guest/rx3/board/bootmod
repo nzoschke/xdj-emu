@@ -1,0 +1,4 @@
+#!/bin/sh
+# dj-emu: the real bootmod reads the i.MX6 boot-mode pins through /dev/mem.
+# The emulated board boots from its SD card (MMC) so apl_start skips NAND.
+echo "BOOTMODE=MMC"

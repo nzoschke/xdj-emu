@@ -1,0 +1,3 @@
+#!/bin/sh
+# dj-emu: the real boardrev decodes the board revision from /proc/cpuinfo.
+echo "BOARD_REV=4TH"
