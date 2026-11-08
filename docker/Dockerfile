@@ -90,6 +90,11 @@ RUN cd /kernel && make ARCH=arm64 -j$(nproc) KBUILD_MODPOST_WARN=1 M=/virtio_snd
 COPY guest/modules/udev_usb1/ /udev_usb1/
 RUN cd /kernel && make ARCH=arm64 -j$(nproc) KBUILD_MODPOST_WARN=1 M=/udev_usb1 modules
 
+# rx3_board provides the XDJ-RX3's Pioneer devices (subucom x4, gpiodrv,
+# printkdrv0) with the user ABI of Pioneer's GPL drivers.
+COPY guest/modules/rx3_board/ /rx3_board/
+RUN cd /kernel && make ARCH=arm64 -j$(nproc) KBUILD_MODPOST_WARN=1 M=/rx3_board modules
+
 # dummy_drv.so is the Xorg dummy video driver (ABI 24.0) for headless mode.
 # Ubuntu 20.04 (focal) arm64 ships Xorg 1.20.9, whose ABI 24.0 matches Pioneer's
 # Xorg 1.20.4. The package is fetched over HTTPS and its SHA-256 is checked, so
@@ -120,6 +125,7 @@ RUN mkdir -p /out/modules && \
     cp /subucom_virt/subucom_virt.ko                                 /out/modules/ && \
     cp /virtio_snd/virtio_snd.ko                                     /out/modules/ && \
     cp /udev_usb1/udev_usb1.ko                                       /out/modules/ && \
+    cp /rx3_board/rx3_board.ko                                       /out/modules/ && \
     cp /tmp/dummy_extract/usr/lib/xorg/modules/drivers/dummy_drv.so /out/ && \
     cp /tmp/guest/out/subucom_forwarder_aarch64                      /out/ && \
     cp /tmp/guest/out/subucom_live_aarch64                           /out/ && \

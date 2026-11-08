@@ -1,0 +1,139 @@
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index d3d9fff..0b2019c 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -5672,6 +5672,94 @@ IOCTLEntry ioctl_entries[] = {
+     { 0, 0, },
+ };
+ 
++/*
++ * dj-emu: the Pioneer XDJ-RX3 board drivers (subucom_spi, subucom_spi_rdy:
++ * magic 'p'; gpiodrv: magic 0xF1). Their command encoding is the generic one
++ * on ARM and AArch64, so the number passes through. Arguments are plain
++ * buffers in the same layout on both, except that
++ *   - SUBUCOM_IOC_MESSAGE (nr 0) holds struct subucom_ioc_transfer, whose
++ *     __u64 tx_buf is a guest pointer to translate;
++ *   - gpiodrv SETISR/CLRISR (nr 1, 2) declare int but pass the 8-byte ARM32
++ *     struct gpioirq_inf { int gpio; unsigned long trigger; }.
++ */
++#define DJEMU_SUBUCOM_MAGIC 'p'
++#define DJEMU_GPIODRV_MAGIC 0xF1
++
++struct djemu_subucom_ioc_transfer {
++    uint8_t multi_id, reserved, part_id, part_num;
++    uint32_t bytes;
++    uint64_t tx_buf;
++};
++
++static abi_long do_ioctl_djemu_pioneer(int fd, int cmd, abi_long arg)
++{
++    unsigned type = (cmd >> _IOC_TYPESHIFT) & _IOC_TYPEMASK;
++    unsigned nr = (cmd >> _IOC_NRSHIFT) & _IOC_NRMASK;
++    unsigned dir = (cmd >> _IOC_DIRSHIFT) & _IOC_DIRMASK;
++    unsigned size = (cmd >> _IOC_SIZESHIFT) & _IOC_SIZEMASK;
++    uint8_t buf[256];
++    void *p;
++    abi_long ret;
++
++    if (type == DJEMU_SUBUCOM_MAGIC && nr == 0) {
++        struct djemu_subucom_ioc_transfer *t;
++        unsigned n = size / sizeof(*t), i;
++        void *data[8];
++
++        if (n == 0 || n > 8 || size % sizeof(*t) || size > sizeof(buf)) {
++            return -TARGET_EINVAL;
++        }
++        p = lock_user(VERIFY_READ, arg, size, 1);
++        if (!p) {
++            return -TARGET_EFAULT;
++        }
++        memcpy(buf, p, size);
++        unlock_user(p, arg, 0);
++        t = (struct djemu_subucom_ioc_transfer *)buf;
++        for (i = 0; i < n; i++) {
++            abi_ulong guest = (abi_ulong)le64_to_cpu(t[i].tx_buf);
++            uint32_t bytes = le32_to_cpu(t[i].bytes);
++
++            data[i] = lock_user(VERIFY_READ, guest, bytes, 1);
++            if (!data[i] && bytes) {
++                while (i--) {
++                    unlock_user(data[i], 0, 0);
++                }
++                return -TARGET_EFAULT;
++            }
++            t[i].tx_buf = cpu_to_le64((uint64_t)(uintptr_t)data[i]);
++        }
++        ret = get_errno(safe_ioctl(fd, cmd, buf));
++        for (i = 0; i < n; i++) {
++            unlock_user(data[i], 0, 0);
++        }
++        return ret;
++    }
++
++    if (type == DJEMU_GPIODRV_MAGIC && (nr == 1 || nr == 2)) {
++        size = 8;
++    }
++    if (size == 0) {
++        return get_errno(safe_ioctl(fd, cmd, 0));
++    }
++    if (size > sizeof(buf)) {
++        return -TARGET_EINVAL;
++    }
++    p = lock_user(VERIFY_WRITE, arg, size, 1);
++    if (!p) {
++        return -TARGET_EFAULT;
++    }
++    memcpy(buf, p, size);
++    ret = get_errno(safe_ioctl(fd, cmd, buf));
++    if (!is_error(ret) && (dir & _IOC_READ)) {
++        memcpy(p, buf, size);
++        unlock_user(p, arg, size);
++    } else {
++        unlock_user(p, arg, 0);
++    }
++    return ret;
++}
++
+ /* ??? Implement proper locking for ioctls.  */
+ /* do_ioctl() Must return target values and target errnos. */
+ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+@@ -5683,6 +5771,39 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+     int target_size;
+     void *argptr;
+ 
++    {
++        /*
++         * Exact commands only: 'p' is also the RTC magic, whose ioctls keep
++         * their normal handling below.
++         */
++        static const unsigned djemu_cmds[] = {
++            _IOW(DJEMU_SUBUCOM_MAGIC, 0, struct djemu_subucom_ioc_transfer),
++            _IOR(DJEMU_SUBUCOM_MAGIC, 1, uint8_t),
++            _IOW(DJEMU_SUBUCOM_MAGIC, 1, uint8_t),
++            _IOR(DJEMU_SUBUCOM_MAGIC, 2, uint32_t),
++            _IOW(DJEMU_SUBUCOM_MAGIC, 2, uint32_t),
++            _IOR(DJEMU_SUBUCOM_MAGIC, 3, uint16_t),
++            _IOW(DJEMU_SUBUCOM_MAGIC, 3, uint16_t),
++            _IOR(DJEMU_SUBUCOM_MAGIC, 4, uint32_t),
++            _IOW(DJEMU_SUBUCOM_MAGIC, 4, uint32_t),
++            _IOR(DJEMU_SUBUCOM_MAGIC, 6, uint8_t),
++            _IOW(DJEMU_SUBUCOM_MAGIC, 6, uint8_t),
++            _IOR(DJEMU_SUBUCOM_MAGIC, 7, uint32_t),
++            _IOW(DJEMU_SUBUCOM_MAGIC, 7, uint32_t),
++        };
++        unsigned type = ((unsigned)cmd >> _IOC_TYPESHIFT) & _IOC_TYPEMASK;
++        size_t i;
++
++        if (type == DJEMU_GPIODRV_MAGIC) {
++            return do_ioctl_djemu_pioneer(fd, cmd, arg);
++        }
++        for (i = 0; i < ARRAY_SIZE(djemu_cmds); i++) {
++            if ((unsigned)cmd == djemu_cmds[i]) {
++                return do_ioctl_djemu_pioneer(fd, cmd, arg);
++            }
++        }
++    }
++
+     ie = ioctl_entries;
+     for(;;) {
+         if (ie->target_cmd == 0) {

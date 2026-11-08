@@ -4,7 +4,8 @@
 #   qemu-arm        static aarch64 qemu-arm (linux-user) from qemu/src, the
 #                   same patched tree the host QEMU is built from
 #   initramfs.cpio.gz
-#                   the boot shim: busybox, qemu-arm, /init (guest/rx3/init)
+#                   the boot shim: busybox, qemu-arm, the RX3 board module
+#                   (build/docker-out, from ./build.sh), /init (guest/rx3/init)
 #
 # and, with --firmware <decrypted XDJRX3 ISO>, the per-install disks:
 #
@@ -54,10 +55,15 @@ echo "[rx3] building initramfs..."
 run '
     root=/tmp/initramfs; mkdir -p $root/{bin,dev,proc,sys,newroot,usr/libexec}
     cp /bin/busybox $root/bin/busybox
-    for applet in sh mount umount mkdir mknod switch_root sleep cat echo ls ln grep; do
+    for applet in sh mount umount mkdir mknod switch_root sleep cat echo ls ln grep insmod; do
         ln -s busybox $root/bin/$applet
     done
     cp /out/qemu-arm $root/usr/libexec/qemu-arm
+    gcc -static -O2 -Wall -Wextra -o $root/bin/subucom-log /src/guest/rx3/subucom-log.c
+    mkdir -p $root/lib/modules
+    for ko in rx3_board; do
+        cp /src/build/docker-out/modules/$ko.ko $root/lib/modules/
+    done
     install -m 0755 /src/guest/rx3/init $root/init
     (cd $root && find . | cpio -o -H newc --quiet | gzip -9) > /out/initramfs.cpio.gz
 '

@@ -14,6 +14,13 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 echo "dj-emu rx3: boot shim"
 
+# The RX3's Pioneer devices: subucom x4, gpiodrv, printkdrv0.
+insmod /lib/modules/rx3_board.ko
+# Bring-up: print the player's panel TX frames on the console (rx3.log=1).
+if grep -q 'rx3.log=1' /proc/cmdline; then
+    /bin/subucom-log < /dev/null > /dev/console 2>&1 &
+fi
+
 # ARM32 EABI ELF executables and shared objects -> qemu-arm. F: the kernel
 # opens the interpreter now, so it keeps working inside the ARM-only root.
 mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc

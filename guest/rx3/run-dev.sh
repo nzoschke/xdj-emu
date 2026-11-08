@@ -19,7 +19,7 @@ cp "$RX3/board.img" "$RUN/board.img"
 exec "$QEMU" \
     -machine virt,gic-version=3 -accel hvf -cpu host -smp 4 -m 2G \
     -kernel "$REPO/build/Image" -initrd "$RX3/initramfs.cpio.gz" \
-    -append "console=ttyAMA0,115200 rdinit=/init loglevel=5 virtio_blk.emmc_index=0 virtio_gpu.modeset=1 video=Virtual-1:1280x800-32@60" \
+    -append "console=ttyAMA0,115200 rdinit=/init loglevel=5 virtio_blk.emmc_index=0 rx3.log=1 virtio_gpu.modeset=1 video=Virtual-1:1280x800-32@60" \
     -drive if=none,id=root,file="$RUN/rootfs.ext4",format=raw -device virtio-blk-device,drive=root \
     -drive if=none,id=board,file="$RUN/board.img",format=raw -device virtio-blk-device,drive=board \
     -device virtio-gpu-device,xres=1280,yres=800,max_outputs=1 \
