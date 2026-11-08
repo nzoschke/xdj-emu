@@ -1,6 +1,8 @@
 # XDJ-RX3 support (design)
 
-> Status: design + first building blocks. The RX3 is emulated the same way as
+> Status: the unmodified 1.20 player boots its own userland to the home
+> screen on emulated RX3 hardware (2026-11-08, `guest/rx3/run-dev.sh`).
+> Not yet in the app; no panel input or audio yet. The RX3 is emulated the same way as
 > the CDJ models: its own firmware userland boots on a stock kernel, and the
 > player talks to emulated copies of its own hardware, driven by the
 > on-screen device. There is no MIDI-controller path.
@@ -54,9 +56,10 @@ From the strings of the 1.20 `rbp`:
 | `/dev/subucom_spi1.0`, `/dev/subucom_spi2.0` | `arch/arm/mach-mx6/subucom_spi.c` | `subucom_virt` RX3 mode, same ABI |
 | `/dev/subucom_spi_rdy3.0`, `/dev/subucom_spi_rdy4.0` | `arch/arm/mach-mx6/subucom_spi_rdy.c` | `subucom_virt` RX3 mode |
 | `/dev/tsc2007_2-0048` | `drivers/input/touchscreen/tsc2007.c` (Pioneer char-dev variant) | small module fed from host touch |
-| `/dev/fb0` | mxc fb + Vivante DirectFB | virtio-gpu fbdev → `main.shm` |
-| `/dev/gpiodrv`, `/dev/printkdrv0`, `/dev/mem` | Pioneer misc drivers | stubs |
-| `/dev/hidg0`, `/dev/paudiog0` | USB gadget (PC link) | out of scope for now |
+| `/dev/fb0` | mxc fb + Vivante DirectFB | `rx3fb`: 1280×800, RGB565/XRGB8888, panning, on ivshmem (`rx3fb.shm`); DirectFB in software (`/usr/etc/directfbrc`) |
+| `/dev/gpiodrv`, `/dev/printkdrv0` | Pioneer misc drivers | `rx3_board`, same ABI |
+| `/dev/hidg0`, `/dev/paudiog0` | USB gadget (PC link) | `rx3_board`: no host attached |
+| `eth0` | i.MX FEC (Pro DJ Link) | virtio-net (the player dereferences its network object) |
 | ALSA | i.MX SSI/ESAI + codecs | dj-emu `virtio_snd` |
 
 ### subucom ABI (from `subucom_spi.h`, `subucom_spi_rdy.h`)
@@ -80,9 +83,23 @@ memory. The struct uses fixed-width types, so the layout is identical on
 ARM32 and AArch64; only the pointer needs translating. This is a patch in
 `qemu/patches/` for the guest-side `qemu-arm` build.
 
+## Bring-up findings
+
+* qemu-user's `select()` passed `tv_usec * 1000` straight to `pselect6`; the
+  player passes `tv_usec = 2000000`, which the kernel normalises but
+  `pselect6` rejects. Fixed in patch 22.
+* The player needs `eth0`, `/dev/hidg0` and `/dev/gpiodrv` to exist or it
+  dereferences NULL during start-up; the prototype's binary patches covered
+  for exactly these missing devices.
+* The player's primary layer is RGB565: virtio-gpu cannot provide it, hence
+  `rx3fb`.
+* Debugging: `guest/rx3/dev-strace-rbp.sh` wraps the player in the assembled
+  root so a boot prints qemu-arm's syscall trace and the player's stderr.
+
 ## Open work, in order
 
-1. `xdjrx3` model and argv branch; boot the RX3 userland in the app window.
+1. `xdjrx3` model and argv branch; boot the RX3 userland in the app window
+   (host renders `rx3fb.shm`).
 2. Provisioning in Rust: cramfs, root assembly, `qemu-arm` + modules overlay.
 3. `subucom_virt` RX3 mode + qemu-arm ioctl patch; log real traffic.
 4. RX3 frame codec (`MisoCodec`/`MosiCodec`), from `rbp` + traffic logs.

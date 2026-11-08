@@ -125,7 +125,7 @@ RUN mkdir -p /out/modules && \
     cp /subucom_virt/subucom_virt.ko                                 /out/modules/ && \
     cp /virtio_snd/virtio_snd.ko                                     /out/modules/ && \
     cp /udev_usb1/udev_usb1.ko                                       /out/modules/ && \
-    cp /rx3_board/rx3_board.ko                                       /out/modules/ && \
+    cp /rx3_board/rx3_board.ko /rx3_board/rx3fb.ko                   /out/modules/ && \
     cp /tmp/dummy_extract/usr/lib/xorg/modules/drivers/dummy_drv.so /out/ && \
     cp /tmp/guest/out/subucom_forwarder_aarch64                      /out/ && \
     cp /tmp/guest/out/subucom_live_aarch64                           /out/ && \

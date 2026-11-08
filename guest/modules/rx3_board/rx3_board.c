@@ -13,6 +13,7 @@
  *                                                     plus TX_BUF_STAT
  *   /dev/gpiodrv      one byte per GPIO (offset = IMX_GPIO_NR), IRQ ioctls
  *   /dev/printkdrv0   writes go to the kernel log
+ *   /dev/hidg0, /dev/paudiog0  the rear USB-B gadget, with no host attached
  *   /dev/rx3_subucom  the host side of the four panel links (see below)
  *
  * subucom: on the real unit a kernel thread runs one full-duplex SPI transfer
@@ -522,6 +523,58 @@ static struct miscdevice printk_misc = {
 	.minor = MISC_DYNAMIC_MINOR, .name = "printkdrv0", .fops = &printk_fops, .mode = 0666,
 };
 
+/* ---- /dev/hidg0, /dev/paudiog0: the rear USB-B gadget, unplugged -------- */
+
+/*
+ * On the unit these are USB gadget functions (g_pmulti) behind the rear
+ * USB-B "PC link". With no computer attached, reads wait for a host that
+ * never comes and writes go nowhere; that is what these do. A PC-link
+ * bridge can replace them later.
+ */
+static DECLARE_WAIT_QUEUE_HEAD(gadget_wait);
+
+static ssize_t gadget_read(struct file *f, char __user *buf, size_t n, loff_t *pos)
+{
+	if (f->f_flags & O_NONBLOCK)
+		return -EAGAIN;
+	/* Sleeps until a signal: no USB host will ever send a report. */
+	if (wait_event_interruptible(gadget_wait, false))
+		return -ERESTARTSYS;
+	return 0;
+}
+
+static ssize_t gadget_write(struct file *f, const char __user *buf, size_t n, loff_t *pos)
+{
+	return n;
+}
+
+static __poll_t gadget_poll(struct file *f, poll_table *wait)
+{
+	poll_wait(f, &gadget_wait, wait);
+	return EPOLLOUT | EPOLLWRNORM;
+}
+
+static long gadget_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+{
+	return -ENOTTY;
+}
+
+static const struct file_operations gadget_fops = {
+	.owner = THIS_MODULE,
+	.read = gadget_read,
+	.write = gadget_write,
+	.poll = gadget_poll,
+	.unlocked_ioctl = gadget_ioctl,
+	.llseek = no_llseek,
+};
+
+static struct miscdevice hidg_misc = {
+	.minor = MISC_DYNAMIC_MINOR, .name = "hidg0", .fops = &gadget_fops, .mode = 0666,
+};
+static struct miscdevice paudiog_misc = {
+	.minor = MISC_DYNAMIC_MINOR, .name = "paudiog0", .fops = &gadget_fops, .mode = 0666,
+};
+
 /* ---- module ------------------------------------------------------------- */
 
 static int __init rx3_board_init(void)
@@ -558,9 +611,19 @@ static int __init rx3_board_init(void)
 	ret = misc_register(&printk_misc);
 	if (ret)
 		goto fail_gpio;
-	pr_info("rx3_board: subucom x4, gpiodrv, printkdrv0, rx3_subucom ready\n");
+	ret = misc_register(&hidg_misc);
+	if (ret)
+		goto fail_printk;
+	ret = misc_register(&paudiog_misc);
+	if (ret)
+		goto fail_hidg;
+	pr_info("rx3_board: subucom x4, gpiodrv, printkdrv0, hidg0, paudiog0, rx3_subucom ready\n");
 	return 0;
 
+fail_hidg:
+	misc_deregister(&hidg_misc);
+fail_printk:
+	misc_deregister(&printk_misc);
 fail_gpio:
 	misc_deregister(&gpio_misc);
 fail_link:
@@ -577,6 +640,8 @@ static void __exit rx3_board_exit(void)
 {
 	int i;
 
+	misc_deregister(&paudiog_misc);
+	misc_deregister(&hidg_misc);
 	misc_deregister(&printk_misc);
 	misc_deregister(&gpio_misc);
 	misc_deregister(&link_misc);

@@ -1,8 +1,27 @@
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index d3d9fff..0b2019c 100644
+index d3d9fff..15444c4 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
-@@ -5672,6 +5672,94 @@ IOCTLEntry ioctl_entries[] = {
+@@ -1365,8 +1365,16 @@ static abi_long do_select(int n,
+     if (target_tv_addr) {
+         if (copy_from_user_timeval(&tv, target_tv_addr))
+             return -TARGET_EFAULT;
+-        ts.tv_sec = tv.tv_sec;
+-        ts.tv_nsec = tv.tv_usec * 1000;
++        /*
++         * dj-emu: like the kernel's select(), carry whole seconds out of
++         * tv_usec (the XDJ-RX3 player passes tv_usec = 2000000); passing
++         * tv_usec * 1000 straight through makes pselect6 fail with EINVAL.
++         */
++        if (tv.tv_sec < 0 || tv.tv_usec < 0) {
++            return -TARGET_EINVAL;
++        }
++        ts.tv_sec = tv.tv_sec + tv.tv_usec / 1000000;
++        ts.tv_nsec = (tv.tv_usec % 1000000) * 1000;
+         ts_ptr = &ts;
+     } else {
+         ts_ptr = NULL;
+@@ -5672,6 +5680,94 @@ IOCTLEntry ioctl_entries[] = {
      { 0, 0, },
  };
  
@@ -97,7 +116,7 @@ index d3d9fff..0b2019c 100644
  /* ??? Implement proper locking for ioctls.  */
  /* do_ioctl() Must return target values and target errnos. */
  static abi_long do_ioctl(int fd, int cmd, abi_long arg)
-@@ -5683,6 +5771,39 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+@@ -5683,6 +5779,39 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
      int target_size;
      void *argptr;
  

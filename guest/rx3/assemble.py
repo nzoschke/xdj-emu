@@ -9,6 +9,7 @@ Runs inside guest/rx3/Dockerfile (bsdtar, fsck.cramfs, mke2fs). Produces:
                images/gui.tar.gz and the ISO's gui/ in /root/gui,
                images/settings.tar.gz in /root/settings, plus the board-tool
                replacements in guest/rx3/board/ (originals kept as *.orig)
+               and a /usr/etc/directfbrc for software rendering
   board.img    a U-Boot environment at 0xC0000 (size 0x2000, CRC32 first),
                where the RX3's fw_printenv reads it in SD mode; the values
                start from the firmware's own images/fw_env.txt
@@ -26,6 +27,19 @@ ENV_SIZE = 0x2000
 BOARD_IMG_SIZE = 1 << 20
 ROOTFS_SIZE = "768M"
 BOARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "board")
+
+# DirectFB configuration for the emulated board (the firmware ships none).
+# The unit renders through its Vivante GC2000 (gfxdriver "gal", /dev/galcore),
+# which is not emulated: DirectFB draws in software into the same fbdev. Its
+# evdev/PS2 input drivers are off because the RX3's controls arrive through
+# subucom and its touch controller, not evdev.
+DIRECTFBRC = """\
+no-hardware
+disable-module=gal
+disable-module=keyboard
+disable-module=linux_input
+disable-module=ps2mouse
+"""
 
 # Overrides on top of images/fw_env.txt. aplstart=on lets apl_start launch the
 # player; rootfs=mmc with BOOTMODE=MMC (board/bootmod) skips the NAND (UBI)
@@ -91,6 +105,11 @@ def main():
             os.rename(dst, dst + ".orig")
         shutil.copy(os.path.join(BOARD, tool), dst)
         os.chmod(dst, 0o755)
+
+    # This DirectFB build reads /usr/etc/directfbrc (its sysconfdir).
+    os.makedirs(os.path.join(root, "usr", "etc"), exist_ok=True)
+    with open(os.path.join(root, "usr", "etc", "directfbrc"), "w") as f:
+        f.write(DIRECTFBRC)
 
     rootfs = os.path.join(out, "rootfs.ext4")
     if os.path.exists(rootfs):
