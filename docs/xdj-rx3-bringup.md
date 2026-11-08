@@ -91,16 +91,33 @@ The prototype's binary patch list
 good map of missing devices: most of its patches were working around exactly
 the hardware the emulation now provides.
 
+## Ruled out (2026-11-08, later)
+
+Boot-to-boot comparisons that did **not** get the player to open the panel:
+
+- **Sound:** no card at all (`RX3_KCMD_EXTRA=snd-dummy.enable=0`) behaves
+  exactly like the dummy card, and the player never opens
+  `/dev/snd/controlC*` before it blocks, so sound init is not the trigger.
+  (RX3-shaped cards are still needed for audio, and qemu-arm cannot yet
+  translate ALSA PCM ioctls.)
+- **Every file the player looks for and does not find** (the `live` wrapper
+  now lists them). Added, each now accepted: `/proc/udev_usb1`, `udev_usb2`
+  and friends (cdj3k-emu's `udev_usb1.ko`, now loaded by the shim); the LCD
+  backlight `pwm-backlight.1` and `/sys/class/paudiog/paudiog0/connect`
+  (`rx3_board.ko`; `CONFIG_BACKLIGHT_CLASS_DEVICE=y`); factory and user touch
+  calibration in `/root/settings` (values from the rbpi4b project). The only
+  remaining miss is `/root/settings/XdjSettings.dat`, normal on a first boot.
+
 ## Leads for the open problem
 
 Each is a difference between our board and a real RX3 that could make the
 player raise something during start-up:
 
-- **Sound cards.** The guest has only `snd-dummy` ("Dummy"). The RX3 kernel
-  defines its own cards in `sound/soc/imx/imx-ssi-cs4344-2.c` (master, booth,
-  headphones) and `imx-esai-cs4344.c` (AUX), all in Pioneer's GPL package.
-  Matching card names and PCM layouts (or dropping the dummy card) is the next
-  thing to try; it also feeds the audio work later.
+- **What gets posted to the panel early.** The block is a message posted to
+  the panel peer from the UI message layer (`uif::IMsgHandler::postMessageInternal`
+  was the caller, from the `cpulog` wrapper mode) before the panel thread
+  exists. Finding which UI object posts it, and why on this board, is the most
+  direct route.
 - **Panel answers.** No panel chip ever answers. cdj3k-emu's experience
   (`docs/subucom.md`) is that the player needs a valid idle frame (header,
   power-on bit, CRC) before it engages; the RX3's frame format is still

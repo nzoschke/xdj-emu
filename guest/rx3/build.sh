@@ -61,7 +61,7 @@ run '
     cp /out/qemu-arm $root/usr/libexec/qemu-arm
     gcc -static -O2 -Wall -Wextra -o $root/bin/subucom-log /src/guest/rx3/subucom-log.c
     mkdir -p $root/lib/modules
-    for ko in rx3_board rx3fb; do
+    for ko in rx3_board rx3fb udev_usb1; do
         cp /src/build/docker-out/modules/$ko.ko $root/lib/modules/
     done
     install -m 0755 /src/guest/rx3/init $root/init

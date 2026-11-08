@@ -18,6 +18,9 @@ echo "dj-emu rx3: boot shim"
 insmod /lib/modules/rx3_board.ko
 # The RX3's LCD framebuffer (/dev/fb0) on the ivshmem device.
 insmod /lib/modules/rx3fb.ko
+# Pioneer's media event channels (/proc/udev_usb1, udev_usb2, ...), shared
+# with the CDJ models.
+insmod /lib/modules/udev_usb1.ko
 # Bring-up: print the player's panel TX frames on the console (rx3.log=1).
 if grep -q 'rx3.log=1' /proc/cmdline; then
     /bin/subucom-log < /dev/null > /dev/console 2>&1 &

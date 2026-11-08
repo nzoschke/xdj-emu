@@ -42,6 +42,10 @@ main=$!
         awk '$1 ~ /^[0-9]+$/ { last[$1] = $0 } END { for (t in last) print last[t] }' /tmp/rbp.strace | cut -c1-200
         echo "dj-emu rx3: device opens:"
         grep -E 'open\("/dev' /tmp/rbp.strace | cut -c1-160 | sort | uniq -c | sort -rn | head -40
+        echo "dj-emu rx3: paths that failed to open or stat (no library search):"
+        grep -E '(open|stat64|access|opendir|readlink)\("[^"]*".*= -1 errno=[0-9]+' /tmp/rbp.strace \
+            | grep -v -E '"/lib/|"/usr/lib/|/tls/|/v7l/|/neon/|/vfp/|ld.so' \
+            | sed -r 's/^[0-9]+ //; s/,0x[0-9a-f]+//g' | cut -c1-120 | sort | uniq -c | sort -rn | head -40
         echo "dj-emu rx3: main thread, last 60 syscalls:"
         grep "^$main " /tmp/rbp.strace | tail -n 60 | cut -c1-150
         echo "dj-emu rx3: gpio activity (ioctl 0xf1, seeks, polls, selects):"

@@ -7,7 +7,8 @@ Runs inside guest/rx3/Dockerfile (bsdtar, fsck.cramfs, mke2fs). Produces:
 
   rootfs.ext4  images/rootfs.cramfs, plus images/pdj.tar.gz in /root/pdj,
                images/gui.tar.gz and the ISO's gui/ in /root/gui,
-               images/settings.tar.gz in /root/settings, plus the board-tool
+               images/settings.tar.gz plus the factory touch calibration in
+               /root/settings, plus the board-tool
                replacements in guest/rx3/board/ (originals kept as *.orig)
                a /usr/etc/directfbrc for software rendering and
                /etc/dj-emu/board, the board identity qemu-arm reports
@@ -52,6 +53,12 @@ Hardware=Freescale i.MX 6Quad SABRE Smart Device Board
 Revision=63712
 Serial=0000000000000000
 """
+
+# Touch-panel calibration, which the factory writes to the settings partition
+# (/root/settings/TouchCalib_{Factory,User}.dat): six integers mapping panel
+# readings to LCD pixels. These are the values the rbpi4b project found for a
+# panel that reports pixels, as rx3fb's tsc2007 device does.
+TOUCH_CALIB = "0\n0\n320\n200\n1280\n800\n"
 
 # Overrides on top of images/fw_env.txt. aplstart=on lets apl_start launch the
 # player; rootfs=mmc with BOOTMODE=MMC (board/bootmod) skips the NAND (UBI)
@@ -103,6 +110,9 @@ def main():
         dst = os.path.join(root, "root", name)
         os.makedirs(dst, exist_ok=True)
         run("tar", "-xzf", os.path.join(images, f"{name}.tar.gz"), "-C", dst)
+    for name in ("TouchCalib_Factory.dat", "TouchCalib_User.dat"):
+        with open(os.path.join(root, "root", "settings", name), "w") as f:
+            f.write(TOUCH_CALIB)
     if os.path.isdir(os.path.join(isodir, "gui")):
         run("cp", "-a", os.path.join(isodir, "gui") + "/.", os.path.join(root, "root", "gui"))
     for rev in ("app.rev", "system.rev", "release.txt"):

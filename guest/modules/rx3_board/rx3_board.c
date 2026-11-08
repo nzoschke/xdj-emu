@@ -14,6 +14,8 @@
  *   /dev/gpiodrv      one byte per GPIO (offset = IMX_GPIO_NR), IRQ ioctls
  *   /dev/printkdrv0   writes go to the kernel log
  *   /dev/hidg0, /dev/paudiog0  the rear USB-B gadget, with no host attached
+ *   pwm-backlight.1   the LCD backlight (sysfs, as the i.MX board registers it)
+ *   /sys/class/paudiog/paudiog0/connect  the USB-B audio gadget: unplugged
  *   /dev/rx3_subucom  the host side of the four panel links (see below)
  *
  * subucom: on the real unit a kernel thread runs one full-duplex SPI transfer
@@ -42,6 +44,9 @@
 #include <linux/mutex.h>
 #include <linux/wait.h>
 #include <linux/sched.h>
+#include <linux/platform_device.h>
+#include <linux/backlight.h>
+#include <linux/device.h>
 
 #define SUBUCOM_IOC_MAGIC 'p'
 #define NR_MESSAGE 0
@@ -587,6 +592,85 @@ static struct miscdevice paudiog_misc = {
 	.minor = MISC_DYNAMIC_MINOR, .name = "paudiog0", .fops = &gadget_fops, .mode = 0666,
 };
 
+/* ---- LCD backlight and USB-B gadget state (sysfs) ------------------------ */
+
+/*
+ * The i.MX board registers the panel backlight as platform device
+ * pwm-backlight.1, so the player reads
+ * /sys/devices/platform/pwm-backlight.1/backlight/pwm-backlight.1/. The
+ * USB-B audio gadget reports whether a computer is attached in
+ * /sys/class/paudiog/paudiog0/connect.
+ */
+static struct platform_device *bl_pdev;
+static struct backlight_device *bl_dev;
+static struct class *paudiog_class;
+static struct device *paudiog_dev;
+
+static int bl_update(struct backlight_device *bd)
+{
+	return 0;
+}
+
+static const struct backlight_ops bl_ops = {
+	.update_status = bl_update,
+};
+
+static ssize_t connect_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "0\n");
+}
+static DEVICE_ATTR_RO(connect);
+
+static int board_sysfs_init(void)
+{
+	struct backlight_properties props = {
+		.type = BACKLIGHT_RAW, .max_brightness = 255, .brightness = 255,
+	};
+	int ret;
+
+	bl_pdev = platform_device_register_simple("pwm-backlight", 1, NULL, 0);
+	if (IS_ERR(bl_pdev))
+		return PTR_ERR(bl_pdev);
+	bl_dev = backlight_device_register("pwm-backlight.1", &bl_pdev->dev, NULL,
+					   &bl_ops, &props);
+	if (IS_ERR(bl_dev)) {
+		ret = PTR_ERR(bl_dev);
+		goto err_pdev;
+	}
+	paudiog_class = class_create("paudiog");
+	if (IS_ERR(paudiog_class)) {
+		ret = PTR_ERR(paudiog_class);
+		goto err_bl;
+	}
+	paudiog_dev = device_create(paudiog_class, NULL, MKDEV(0, 0), NULL, "paudiog0");
+	if (IS_ERR(paudiog_dev)) {
+		ret = PTR_ERR(paudiog_dev);
+		goto err_class;
+	}
+	ret = device_create_file(paudiog_dev, &dev_attr_connect);
+	if (ret)
+		goto err_dev;
+	return 0;
+err_dev:
+	device_destroy(paudiog_class, MKDEV(0, 0));
+err_class:
+	class_destroy(paudiog_class);
+err_bl:
+	backlight_device_unregister(bl_dev);
+err_pdev:
+	platform_device_unregister(bl_pdev);
+	return ret;
+}
+
+static void board_sysfs_exit(void)
+{
+	device_remove_file(paudiog_dev, &dev_attr_connect);
+	device_destroy(paudiog_class, MKDEV(0, 0));
+	class_destroy(paudiog_class);
+	backlight_device_unregister(bl_dev);
+	platform_device_unregister(bl_pdev);
+}
+
 /* ---- module ------------------------------------------------------------- */
 
 static int __init rx3_board_init(void)
@@ -629,9 +713,14 @@ static int __init rx3_board_init(void)
 	ret = misc_register(&paudiog_misc);
 	if (ret)
 		goto fail_hidg;
+	ret = board_sysfs_init();
+	if (ret)
+		goto fail_paudiog;
 	pr_info("rx3_board: subucom x4, gpiodrv, printkdrv0, hidg0, paudiog0, rx3_subucom ready\n");
 	return 0;
 
+fail_paudiog:
+	misc_deregister(&paudiog_misc);
 fail_hidg:
 	misc_deregister(&hidg_misc);
 fail_printk:
@@ -652,6 +741,7 @@ static void __exit rx3_board_exit(void)
 {
 	int i;
 
+	board_sysfs_exit();
 	misc_deregister(&paudiog_misc);
 	misc_deregister(&hidg_misc);
 	misc_deregister(&printk_misc);
