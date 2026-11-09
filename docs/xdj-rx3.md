@@ -2,7 +2,7 @@
 
 > Status: the unmodified 1.20 player boots its own userland to the home
 > screen on emulated RX3 hardware (2026-11-08, `guest/rx3/run-dev.sh`).
-> Not yet in the app; no panel input or audio yet. The RX3 is emulated the same way as
+> Not yet in the app; injected panel input works, audio is unproven. The RX3 is emulated the same way as
 > the CDJ models: its own firmware userland boots on a stock kernel, and the
 > player talks to emulated copies of its own hardware, driven by the
 > on-screen device. There is no MIDI-controller path.
@@ -95,15 +95,24 @@ ARM32 and AArch64; only the pointer needs translating. This is a patch in
   `rx3fb`.
 * Debugging: `guest/rx3/dev-strace-rbp.sh` wraps the player in the assembled
   root so a boot prints qemu-arm's syscall trace and the player's stderr.
+* USB overcurrent inputs GPIO4_30 (126) and GPIO7_12 (204) are active low
+  and must idle high. Returning zero caused a synchronous fault notification
+  during UI construction, which waited for the not-yet-started panel thread.
+  With their idle levels corrected, stock rbp opens all four panel channels
+  and the touchscreen. See [the bring-up evidence](xdj-rx3-bringup.md).
 
 ## Open work, in order
 
-1. `xdjrx3` model and argv branch; boot the RX3 userland in the app window
+1. Implement a persistent EUP/SUB panel state source using the
+   [recovered protocol](xdj-rx3-panel.md). CRC, initialization, and 72 deck
+   button bits are verified; QUANTIZE works independently on both decks.
+2. Extend live button coverage, recover mixer/jog inputs, and prove touch
+   dispatch. The touch
+   device opens, but an injected INFO tap has not yet produced a UI change.
+3. Exercise USB media events and recover the ALSA layout for audio.
+4. Provisioning in Rust: cramfs, root assembly, `qemu-arm` + modules overlay.
+5. `xdjrx3` model and argv branch; boot the RX3 userland in the app window
    (host renders `rx3fb.shm`).
-2. Provisioning in Rust: cramfs, root assembly, `qemu-arm` + modules overlay.
-3. `subucom_virt` RX3 mode + qemu-arm ioctl patch; log real traffic.
-4. RX3 frame codec (`MisoCodec`/`MosiCodec`), from `rbp` + traffic logs.
-5. Touch, audio, USB media events.
 6. RX3 slate: two decks + mixer; two-deck `PanelState`.
 
 ## References (read, not copied)

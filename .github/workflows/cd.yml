@@ -1,3 +1,5 @@
+# RX3 fork: automatic tag releases are disabled during bring-up. Packaging
+# remains available through workflow_dispatch and the existing packaging PR checks.
 # Package and release every platform's build. ci.yml builds and tests; this
 # workflow turns the same builds (build.yml) into the dmg, the deb, the rpm, the
 # AppImage and the Windows installers, and smoke-tests them.
@@ -21,8 +23,6 @@
 name: CD
 
 on:
-  push:
-    tags: ["v*"]
   pull_request:
     branches: [main]
     paths:
