@@ -44,8 +44,9 @@ if [ ! -x "$OUT/qemu-arm" ]; then
     echo "[rx3] building static qemu-arm (linux-user)..."
     run '
         cp -a /src/qemu/src /tmp/qemu && cd /tmp/qemu && rm -rf build
-        ./configure --target-list=arm-linux-user --static --disable-system \
-            --disable-tools --disable-docs --disable-plugins --disable-werror >/dev/null
+        PIP_NO_INDEX=1 ./configure --target-list=arm-linux-user --static --disable-system \
+            --disable-tools --disable-docs --disable-plugins --disable-werror > /out/qemu-arm-configure.log 2>&1 \
+            || { cat /out/qemu-arm-configure.log; exit 1; }
         ninja -C build qemu-arm >/dev/null
         strip -o /out/qemu-arm build/qemu-arm
     '
@@ -60,8 +61,9 @@ run '
     done
     cp /out/qemu-arm $root/usr/libexec/qemu-arm
     gcc -static -O2 -Wall -Wextra -o $root/bin/subucom-log /src/guest/rx3/subucom-log.c
+    gcc -static -O2 -Wall -Wextra -o $root/bin/rx3-panel /src/guest/rx3/panel-bridge.c
     mkdir -p $root/lib/modules
-    for ko in rx3_board rx3fb udev_usb1; do
+    for ko in rx3_board rx3fb udev_usb1 virtio_snd; do
         cp /src/build/docker-out/modules/$ko.ko $root/lib/modules/
     done
     install -m 0755 /src/guest/rx3/init $root/init

@@ -21,6 +21,12 @@ insmod /lib/modules/rx3fb.ko
 # Pioneer's media event channels (/proc/udev_usb1, udev_usb2, ...), shared
 # with the CDJ models.
 insmod /lib/modules/udev_usb1.ko
+if [ -c /dev/hvc1 ]; then
+    /bin/rx3-panel /dev/hvc1 > /dev/console 2>&1 &
+fi
+if grep -q 'rx3.audio=1' /proc/cmdline; then
+    insmod /lib/modules/virtio_snd.ko
+fi
 # Bring-up: print the player's panel TX frames on the console (rx3.log=1).
 if grep -q 'rx3.log=1' /proc/cmdline; then
     /bin/subucom-log < /dev/null > /dev/console 2>&1 &
@@ -67,6 +73,20 @@ grep -q 'rx3.gdb=1' /proc/cmdline && ifconfig eth0:9 10.0.2.15 netmask 255.255.2
 # before switch_root, so it lives in the same root as the firmware.
 if grep -q 'rx3.shell=1' /proc/cmdline && [ -c /dev/hvc0 ]; then
     chroot /newroot /bin/sh -c 'while :; do /bin/sh -i < /dev/hvc0 > /dev/hvc0 2>&1; sleep 1; done' &
+fi
+
+# A development USB folder arrives as the third virtio disk. The firmware
+# derives /dev/sd* from the mount path before querying blkid, so retain that
+# device name even though the guest kernel calls this virtio disk vdc.
+if grep -q 'rx3.usb=1' /proc/cmdline; then
+    chroot /newroot /bin/sh -c '
+        sleep 10
+        ln -sf /dev/vdc1 /dev/sda1
+        mkdir -p /media/usb1/sda1
+        if mount -t vfat -o ro /dev/sda1 /media/usb1/sda1; then
+            echo -n "mount /media/usb1/sda1" > /proc/udev_usb1
+        fi
+    ' < /dev/null > /dev/console 2>&1 &
 fi
 
 # Keep binfmt_misc mounted: its registrations live with the mount, so

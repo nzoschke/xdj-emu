@@ -1,0 +1,31 @@
+diff --git a/sound/drivers/dummy.c b/sound/drivers/dummy.c
+--- a/sound/drivers/dummy.c
++++ b/sound/drivers/dummy.c
+@@ -211,7 +211,27 @@
+ 	.rate_max = 192000,
+ };
+ 
++/* RX3 line inputs share the player's 64-frame audio cadence. The generic
++ * dummy profile deliberately uses a much larger period for silent CDJ boots.
++ * Select this profile only for RX3, preserving that default.
++ */
++static const struct dummy_model model_rx3 = {
++	.name = "rx3",
++	.formats = SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE,
++	.buffer_bytes_max = 128 * 8,
++	.period_bytes_min = 64 * 8,
++	.period_bytes_max = 64 * 8,
++	.periods_min = 2,
++	.periods_max = 2,
++	.channels_min = 2,
++	.channels_max = 2,
++	.rates = SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000,
++	.rate_min = 44100,
++	.rate_max = 96000,
++};
++
+ static const struct dummy_model *dummy_models[] = {
++	&model_rx3,
+ 	&model_emu10k1,
+ 	&model_rme9652,
+ 	&model_ice1712,

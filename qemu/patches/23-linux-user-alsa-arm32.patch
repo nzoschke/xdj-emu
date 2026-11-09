@@ -1,0 +1,364 @@
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -5770,6 +5770,8 @@
+ 
+ /* ??? Implement proper locking for ioctls.  */
+ /* do_ioctl() Must return target values and target errnos. */
++#include "djemu-alsa.h"
++
+ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+ {
+     const IOCTLEntry *ie;
+@@ -5778,6 +5780,15 @@
+     uint8_t buf_temp[MAX_STRUCT_SIZE];
+     int target_size;
+     void *argptr;
++
++    if ((unsigned)cmd == _IOW('F', 0x20, uint32_t)) {
++        uint32_t display = 0;
++        return get_errno(safe_ioctl(fd, cmd, &display));
++    }
++    ret = do_ioctl_djemu_alsa(fd, cmd, arg);
++    if (ret != -TARGET_ENOSYS) {
++        return ret;
++    }
+ 
+     {
+         /*
+@@ -5798,6 +5809,8 @@
+             _IOW(DJEMU_SUBUCOM_MAGIC, 6, uint8_t),
+             _IOR(DJEMU_SUBUCOM_MAGIC, 7, uint32_t),
+             _IOW(DJEMU_SUBUCOM_MAGIC, 7, uint32_t),
++            /* fbdev vertical blank wait */
++            _IOW('F', 0x20, uint32_t),
+             /* tsc2007_i2c: poll period, maximum resistance */
+             _IOR('k', 0, uint32_t),
+             _IOW('k', 0, uint32_t),
+@@ -6250,6 +6263,9 @@
+ static abi_long do_mmap(abi_ulong addr, abi_ulong len, int prot,
+                         int target_flags, int fd, off_t offset)
+ {
++    if (djemu_alsa_mmap(fd, offset)) {
++        return -TARGET_ENXIO;
++    }
+     /*
+      * The historical set of flags that all mmap types implicitly support.
+      */
+diff --git a/linux-user/djemu-alsa.h b/linux-user/djemu-alsa.h
+new file mode 100644
+--- /dev/null
++++ b/linux-user/djemu-alsa.h
+@@ -0,0 +1,312 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* ARM EABI ALSA ioctls on the AArch64 RX3 guest kernel. Scalar/fixed-width
++ * commands pass through an explicit whitelist; native-long structures and
++ * embedded pointers are translated. Never expose native mmap status/control
++ * pages to ARM32: alsa-lib falls back to SYNC_PTR, translated below.
++ */
++#if defined(TARGET_ARM) && defined(__aarch64__)
++static unsigned djemu_alsa_frame_bytes[4096];
++static unsigned djemu_alsa_channels[4096];
++static unsigned long djemu_alsa_buffer[4096];
++static unsigned long djemu_alsa_boundary32[4096];
++static unsigned long djemu_alsa_boundary64[4096];
++
++static bool djemu_alsa_mmap(int fd, off_t offset)
++{
++    char link[64], pathbuf[128];
++    ssize_t n;
++    if (offset != 0x80000000ULL && offset != 0x81000000ULL) {
++        return false;
++    }
++    snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
++    n = readlink(link, pathbuf, sizeof(pathbuf) - 1);
++    if (n < 0) {
++        return false;
++    }
++    pathbuf[n] = 0;
++    return strstr(pathbuf, "/dev/snd/pcm") != NULL;
++}
++
++static abi_long do_ioctl_djemu_alsa(int fd, unsigned cmd, abi_ulong arg)
++{
++    unsigned type = _IOC_TYPE(cmd), nr = _IOC_NR(cmd), size = _IOC_SIZE(cmd);
++    unsigned host_cmd = cmd;
++    uint8_t target[1024] = { 0 }, native[1024] = { 0 };
++    void *p;
++    int ret;
++    bool hw = false, sw = false, sync = false, status = false, frames = false;
++    bool scalar_long = false, channel_info = false;
++
++    if (cmd == SNDRV_PCM_IOCTL_PAUSE || cmd == SNDRV_PCM_IOCTL_LINK) {
++        return get_errno(ioctl(fd, cmd, arg));
++    }
++    if (size > sizeof(target)) {
++        return -TARGET_ENOSYS;
++    }
++    if (cmd == _IOR('B', 0x51, uint8_t[12])) {
++        frames = true;
++    } else if (type == 'U') {
++        switch (cmd) {
++        case SNDRV_CTL_IOCTL_PVERSION:
++        case SNDRV_CTL_IOCTL_CARD_INFO:
++        case SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE:
++        case SNDRV_CTL_IOCTL_PCM_INFO:
++        case SNDRV_CTL_IOCTL_PCM_PREFER_SUBDEVICE:
++        case SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS:
++            break;
++        default:
++            return -TARGET_ENOSYS;
++        }
++    } else if (type == 'A') {
++        switch (cmd) {
++        case SNDRV_PCM_IOCTL_PVERSION:
++        case SNDRV_PCM_IOCTL_INFO:
++        case SNDRV_PCM_IOCTL_TSTAMP:
++        case SNDRV_PCM_IOCTL_TTSTAMP:
++        case SNDRV_PCM_IOCTL_USER_PVERSION:
++        case SNDRV_PCM_IOCTL_HW_FREE:
++        case SNDRV_PCM_IOCTL_HWSYNC:
++        case SNDRV_PCM_IOCTL_PREPARE:
++        case SNDRV_PCM_IOCTL_RESET:
++        case SNDRV_PCM_IOCTL_START:
++        case SNDRV_PCM_IOCTL_DROP:
++        case SNDRV_PCM_IOCTL_DRAIN:
++        case SNDRV_PCM_IOCTL_PAUSE:
++        case SNDRV_PCM_IOCTL_RESUME:
++        case SNDRV_PCM_IOCTL_XRUN:
++        case SNDRV_PCM_IOCTL_UNLINK:
++            break;
++        case _IOWR('A', 0x10, uint8_t[604]):
++        case _IOWR('A', 0x11, uint8_t[604]):
++            hw = true;
++            host_cmd = nr == 0x10 ? SNDRV_PCM_IOCTL_HW_REFINE : SNDRV_PCM_IOCTL_HW_PARAMS;
++            break;
++        case _IOWR('A', 0x13, uint8_t[104]):
++            sw = true;
++            host_cmd = SNDRV_PCM_IOCTL_SW_PARAMS;
++            break;
++        case _IOWR('A', 0x23, uint8_t[132]):
++            sync = true;
++            host_cmd = SNDRV_PCM_IOCTL_SYNC_PTR;
++            break;
++        case _IOR('A', 0x32, uint8_t[16]):
++            channel_info = true;
++            host_cmd = SNDRV_PCM_IOCTL_CHANNEL_INFO;
++            break;
++        case _IOR('A', 0x20, uint8_t[108]):
++            status = true;
++            host_cmd = SNDRV_PCM_IOCTL_STATUS;
++            break;
++        case _IOR('A', 0x21, uint32_t):
++        case _IOW('A', 0x46, uint32_t):
++        case _IOW('A', 0x49, uint32_t):
++            scalar_long = true;
++            host_cmd = nr == 0x21 ? SNDRV_PCM_IOCTL_DELAY :
++                       nr == 0x46 ? SNDRV_PCM_IOCTL_REWIND : SNDRV_PCM_IOCTL_FORWARD;
++            break;
++        case _IOW('A', 0x50, uint8_t[12]):
++        case _IOR('A', 0x51, uint8_t[12]):
++        case _IOW('A', 0x52, uint8_t[12]):
++        case _IOR('A', 0x53, uint8_t[12]):
++            frames = true;
++            break;
++        default:
++            return -TARGET_ENOSYS;
++        }
++    } else {
++        return -TARGET_ENOSYS;
++    }
++    if (size) {
++        p = lock_user(VERIFY_READ, arg, size, 1);
++        if (!p) {
++            return -TARGET_EFAULT;
++        }
++        memcpy(target, p, size);
++        unlock_user(p, arg, 0);
++    }
++    if (hw) {
++        struct snd_pcm_hw_params *h = (void *)native;
++        memcpy(native, target, 536);
++        h->fifo_size = ldl_le_p(target + 536);
++        memcpy(h->reserved, target + 540, 64);
++    } else if (sw) {
++        struct snd_pcm_sw_params *s = (void *)native;
++        memcpy(native, target, 12);
++        s->avail_min = ldl_le_p(target + 12);
++        s->xfer_align = ldl_le_p(target + 16);
++        s->start_threshold = ldl_le_p(target + 20);
++        s->stop_threshold = ldl_le_p(target + 24);
++        s->silence_threshold = ldl_le_p(target + 28);
++        s->silence_size = ldl_le_p(target + 32);
++        s->boundary = ldl_le_p(target + 36);
++        s->proto = ldl_le_p(target + 40);
++        s->tstamp_type = ldl_le_p(target + 44);
++        if (fd >= 0 && fd < ARRAY_SIZE(djemu_alsa_buffer) && djemu_alsa_buffer[fd]) {
++            unsigned long b = djemu_alsa_buffer[fd], b32 = b, b64 = b;
++            while (b32 * 2 <= 0x7fffffffUL - b) {
++                b32 *= 2;
++            }
++            while (b64 * 2 <= LONG_MAX - b) {
++                b64 *= 2;
++            }
++            djemu_alsa_boundary32[fd] = b32;
++            djemu_alsa_boundary64[fd] = b64;
++            if (s->silence_size >= b32) {
++                s->silence_size = b64;
++            }
++            if (s->stop_threshold >= b32) {
++                s->stop_threshold = b64;
++            }
++            if (s->start_threshold >= b32) {
++                s->start_threshold = b64;
++            }
++            s->boundary = b64;
++        }
++    } else if (sync) {
++        struct snd_pcm_sync_ptr *s = (void *)native;
++        s->flags = ldl_le_p(target);
++        s->c.control.appl_ptr = ldl_le_p(target + 68);
++        s->c.control.avail_min = ldl_le_p(target + 72);
++    } else if (scalar_long) {
++        *(unsigned long *)native = ldl_le_p(target);
++    } else if (frames) {
++        struct snd_xferi x = { 0 };
++        abi_ulong guest_buf = ldl_le_p(target + 4);
++        unsigned count = ldl_le_p(target + 8);
++        unsigned width = fd >= 0 && fd < ARRAY_SIZE(djemu_alsa_frame_bytes) ?
++                         djemu_alsa_frame_bytes[fd] : 0;
++        bool input = nr == 0x51 || nr == 0x53;
++        bool usb = type == 'B';
++        if (usb) { width = 16; }
++        void *data, *channels[32];
++        abi_ulong guest_channels[32];
++        unsigned i, nch;
++        if (!width || count > 0x1000000 / width) {
++            return -TARGET_EINVAL;
++        }
++        if (nr < 0x52) {
++            data = lock_user(input ? VERIFY_WRITE : VERIFY_READ, guest_buf,
++                             count * width, !input);
++            if (!data) {
++                return -TARGET_EFAULT;
++            }
++            x.buf = data;
++            x.frames = count;
++            ret = ioctl(fd, usb ? _IOR('B', 0x51, struct snd_xferi) :
++                        input ? SNDRV_PCM_IOCTL_READI_FRAMES : SNDRV_PCM_IOCTL_WRITEI_FRAMES, &x);
++            unlock_user(data, guest_buf, input && ret >= 0 ? count * width : 0);
++        } else {
++            struct snd_xfern nx = { .frames = count, .bufs = channels };
++            nch = djemu_alsa_channels[fd];
++            if (!nch || nch > ARRAY_SIZE(channels) || width % nch) {
++                return -TARGET_EINVAL;
++            }
++            p = lock_user(VERIFY_READ, guest_buf, nch * 4, 1);
++            if (!p) {
++                return -TARGET_EFAULT;
++            }
++            for (i = 0; i < nch; i++) {
++                guest_channels[i] = ldl_le_p((uint8_t *)p + i * 4);
++            }
++            unlock_user(p, guest_buf, 0);
++            for (i = 0; i < nch; i++) {
++                channels[i] = lock_user(input ? VERIFY_WRITE : VERIFY_READ,
++                                       guest_channels[i], count * (width / nch), !input);
++                if (!channels[i]) {
++                    while (i) {
++                        --i;
++                        unlock_user(channels[i], guest_channels[i], 0);
++                    }
++                    return -TARGET_EFAULT;
++                }
++            }
++            ret = ioctl(fd, input ? SNDRV_PCM_IOCTL_READN_FRAMES : SNDRV_PCM_IOCTL_WRITEN_FRAMES, &nx);
++            for (i = 0; i < nch; i++) {
++                unlock_user(channels[i], guest_channels[i],
++                            input && ret >= 0 ? count * (width / nch) : 0);
++            }
++            x.result = nx.result;
++        }
++        stl_le_p(target, x.result);
++        goto copy_result;
++    } else {
++        memcpy(native, target, size);
++    }
++    ret = ioctl(fd, host_cmd, native);
++    if (ret < 0) {
++        return get_errno(ret);
++    }
++    if (hw) {
++        struct snd_pcm_hw_params *h = (void *)native;
++        memcpy(target, native, 536);
++        stl_le_p(target + 536, h->fifo_size);
++        memcpy(target + 540, h->reserved, 64);
++        if (nr == 0x11 && fd >= 0 && fd < ARRAY_SIZE(djemu_alsa_frame_bytes)) {
++            djemu_alsa_buffer[fd] = h->intervals[SNDRV_PCM_HW_PARAM_BUFFER_SIZE -
++                                              SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].min;
++            djemu_alsa_channels[fd] = h->intervals[SNDRV_PCM_HW_PARAM_CHANNELS -
++                                                SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].min;
++            djemu_alsa_frame_bytes[fd] = h->intervals[SNDRV_PCM_HW_PARAM_FRAME_BITS -
++                                                   SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].min / 8;
++        }
++    } else if (sw) {
++        struct snd_pcm_sw_params *s = (void *)native;
++        stl_le_p(target + 36, fd >= 0 && fd < ARRAY_SIZE(djemu_alsa_buffer) ?
++                  djemu_alsa_boundary32[fd] : s->boundary);
++    } else if (sync) {
++        struct snd_pcm_sync_ptr *s = (void *)native;
++        stl_le_p(target + 4, s->s.status.state);
++        stl_le_p(target + 12, s->s.status.hw_ptr);
++        stl_le_p(target + 16, s->s.status.tstamp.tv_sec);
++        stl_le_p(target + 20, s->s.status.tstamp.tv_nsec);
++        stl_le_p(target + 24, s->s.status.suspended_state);
++        stl_le_p(target + 28, s->s.status.audio_tstamp.tv_sec);
++        stl_le_p(target + 32, s->s.status.audio_tstamp.tv_nsec);
++        stl_le_p(target + 68, s->c.control.appl_ptr);
++        stl_le_p(target + 72, s->c.control.avail_min);
++    } else if (status) {
++        struct snd_pcm_status *s = (void *)native;
++        stl_le_p(target, s->state);
++        stl_le_p(target + 4, s->trigger_tstamp.tv_sec);
++        stl_le_p(target + 8, s->trigger_tstamp.tv_nsec);
++        stl_le_p(target + 12, s->tstamp.tv_sec);
++        stl_le_p(target + 16, s->tstamp.tv_nsec);
++        stl_le_p(target + 20, s->appl_ptr);
++        stl_le_p(target + 24, s->hw_ptr);
++        stl_le_p(target + 28, s->delay);
++        stl_le_p(target + 32, s->avail);
++        stl_le_p(target + 36, s->avail_max);
++        stl_le_p(target + 40, s->overrange);
++        stl_le_p(target + 44, s->suspended_state);
++    } else if (channel_info) {
++        struct snd_pcm_channel_info *c = (void *)native;
++        stl_le_p(target, c->channel);
++        stl_le_p(target + 4, c->offset);
++        stl_le_p(target + 8, c->first);
++        stl_le_p(target + 12, c->step);
++    } else if (scalar_long) {
++        stl_le_p(target, *(unsigned long *)native);
++    } else {
++        memcpy(target, native, size);
++    }
++copy_result:
++    if (ret < 0) {
++        return get_errno(ret);
++    }
++    if (size) {
++        p = lock_user(VERIFY_WRITE, arg, size, 0);
++        if (!p) {
++            return -TARGET_EFAULT;
++        }
++        memcpy(p, target, size);
++        unlock_user(p, arg, size);
++    }
++    return ret;
++}
++#else
++static bool djemu_alsa_mmap(int fd, off_t offset) { return false; }
++static abi_long do_ioctl_djemu_alsa(int fd, unsigned cmd, abi_ulong arg)
++{
++    return -TARGET_ENOSYS;
++}
++#endif

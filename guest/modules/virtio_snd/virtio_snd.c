@@ -195,6 +195,7 @@ struct vsnd_pcm {
 	unsigned int        qemu_period_bytes;/* bytes per QEMU TX buffer: qemu_factor × period_bytes */
 	unsigned int        qemu_factor;      /* ALSA periods per QEMU TX buffer */
 	unsigned int        frame_bytes;
+	bool                s24_in_s32;
 
 	/* The hrtimer drives hw_ptr and snd_pcm_period_elapsed. */
 	struct hrtimer        timer;
@@ -602,7 +603,13 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 			    vpcm->accum_count * vpcm->period_bytes;
 		char *src = (char *)r->dma_area +
 			    old_hw_ptr * vpcm->frame_bytes;
-		memcpy(dst, src, vpcm->period_bytes);
+		if (vpcm->s24_in_s32) {
+			unsigned int sample;
+			for (sample = 0; sample < vpcm->period_bytes / 4; sample++)
+				((u32 *)dst)[sample] = ((u32 *)src)[sample] << 8;
+		} else {
+			memcpy(dst, src, vpcm->period_bytes);
+		}
 		vpcm->accum_count++;
 
 		if (vpcm->accum_count == vpcm->qemu_factor) {
@@ -786,7 +793,8 @@ static const struct snd_pcm_hardware vsnd_hw = {
 	                 SNDRV_PCM_INFO_INTERLEAVED |
 	                 SNDRV_PCM_INFO_MMAP_VALID  |
 	                 SNDRV_PCM_INFO_BLOCK_TRANSFER,
-	.formats       = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,
+	.formats       = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE |
+	                 SNDRV_PCM_FMTBIT_S32_LE,
 	.rates         = SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000,
 	.rate_min      = 44100,
 	.rate_max      = 96000,
@@ -839,6 +847,7 @@ static int vsnd_pcm_hw_params(struct snd_pcm_substream *sub,
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE: bps = 2; fmt = VSND_FMT_S16; break;
+	case SNDRV_PCM_FORMAT_S24_LE: /* RX3 uses low 24 bits in a 32-bit slot. */
 	case SNDRV_PCM_FORMAT_S32_LE: bps = 4; fmt = VSND_FMT_S32; break;
 	default: return -EINVAL;
 	}
@@ -849,6 +858,7 @@ static int vsnd_pcm_hw_params(struct snd_pcm_substream *sub,
 	default:    return -EINVAL;
 	}
 
+	vpcm->s24_in_s32         = params_format(params) == SNDRV_PCM_FORMAT_S24_LE;
 	vpcm->frame_bytes        = params_channels(params) * bps;
 	vpcm->period_bytes       = params_period_bytes(params);
 	vpcm->period_size        = params_period_size(params);

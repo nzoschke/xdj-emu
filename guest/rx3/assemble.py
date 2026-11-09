@@ -122,6 +122,9 @@ def main():
 
     # Board tools that read SoC registers through /dev/mem on the real unit.
     for tool in sorted(os.listdir(BOARD)):
+        if tool == "asound.conf":
+            shutil.copy(os.path.join(BOARD, tool), os.path.join(root, "etc", tool))
+            continue
         dst = os.path.join(root, "usr", "bin", tool)
         if os.path.exists(dst) and not os.path.exists(dst + ".orig"):
             os.rename(dst, dst + ".orig")
