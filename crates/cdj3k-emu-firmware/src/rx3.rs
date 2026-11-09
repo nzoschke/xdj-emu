@@ -31,7 +31,10 @@ const ISO_SIGNATURE_OFFSET: u64 = 32769;
 
 /// The 32 bytes the player derives from its key file.
 pub fn effective_key(raw: &[u8]) -> [u8; 32] {
-    let first_line = raw.split(|b| *b == b'\n' || *b == b'\r').next().unwrap_or(&[]);
+    let first_line = raw
+        .split(|b| *b == b'\n' || *b == b'\r')
+        .next()
+        .unwrap_or(&[]);
     let mut key = [0u8; 32];
     let n = first_line.len().min(31);
     key[..n].copy_from_slice(&first_line[..n]);
@@ -42,7 +45,9 @@ pub fn effective_key(raw: &[u8]) -> [u8; 32] {
 pub enum Rx3Error {
     Io(io::Error),
     /// The body (file length minus trailer) is not a whole number of sectors.
-    NotSectorAligned { body_len: u64 },
+    NotSectorAligned {
+        body_len: u64,
+    },
     /// Decryption succeeded mechanically but the result is not an ISO 9660
     /// image: almost always the wrong key, or a file that is not an RX3 UPD.
     NotIso,

@@ -13,6 +13,9 @@ fn real_update_decrypts_to_iso() {
     cdj3k_emu_firmware::rx3::decrypt_upd(&upd, &key, &out).unwrap();
     let iso = std::fs::read(&out).unwrap();
     assert_eq!(&iso[32769..32774], b"CD001");
-    assert_eq!(iso.len() as u64, std::fs::metadata(&upd).unwrap().len() - 16);
+    assert_eq!(
+        iso.len() as u64,
+        std::fs::metadata(&upd).unwrap().len() - 16
+    );
     std::fs::remove_file(out).unwrap();
 }

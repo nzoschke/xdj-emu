@@ -4,6 +4,8 @@
 mod cli;
 mod launch;
 mod runtime_worker;
+#[cfg(unix)]
+mod rx3;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -63,6 +65,14 @@ static SLOT_CLAIM: OnceLock<cdj3k_emu_storage::SlotClaim> = OnceLock::new();
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(unix)]
+    let args = {
+        let mut args = args;
+        if let Some(run) = std::env::var_os("DJ_EMU_RX3_RUN") {
+            args.extend(["--rx3".to_owned(), run.to_string_lossy().into_owned()]);
+        }
+        args
+    };
 
     // When the process was started as the QEMU worker, this runs QEMU and exits.
     cdj3k_emu_runtime::qemu_exec::run_worker_if_asked(&args);
@@ -73,6 +83,12 @@ fn main() {
 
     // `cdj3k-emu ctl ...` drives a running slot's control API and exits.
     cdj3k_emu_control::cli::run_if_asked(&args);
+
+    #[cfg(unix)]
+    if args.iter().any(|s| s == "--rx3") {
+        rx3::run(&args);
+        return;
+    }
 
     let mut cli = Cli::parse(&args);
     if cli.help {
