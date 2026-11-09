@@ -35,3 +35,6 @@ pub use miso_frame::{JogState, MisoCodec, PanelState};
 pub use model::Model;
 pub use mosi_frame::{LampState, MosiCodec, MosiFrame, StepLed};
 pub use spec::{Controls, JogBrake, ModelSpec, TouchSpace, TOUCH_DOWN};
+
+/// XDJ-RX3 main-panel framing (separate EUP and SUB channels).
+pub mod rx3;

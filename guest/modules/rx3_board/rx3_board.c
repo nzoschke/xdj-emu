@@ -441,7 +441,12 @@ static struct miscdevice link_misc = {
 #define GPIODRV_IOC_MAGIC 0xF1
 #define N_GPIO 224	/* IMX_GPIO_NR(7, 31) + 1 */
 
-static u8 gpio_val[N_GPIO];
+/* USB-A OCS inputs are active low. rbp samples them synchronously from
+ * GpioManager's constructor, before its panel message thread exists; a low
+ * input posts an overcurrent notification and stalls UI initialization.
+ * GPIO4_30 (126) and GPIO7_12 (204) must idle high with no fault.
+ */
+static u8 gpio_val[N_GPIO] = { [126] = 1, [204] = 1 };
 static DEFINE_MUTEX(gpio_lock);
 
 static ssize_t gpio_read(struct file *f, char __user *buf, size_t n, loff_t *pos)
@@ -571,9 +576,27 @@ static __poll_t gadget_poll(struct file *f, poll_table *wait)
 	return EPOLLOUT | EPOLLWRNORM;
 }
 
+/* f_paudio.h uses native longs: qemu-arm widens its 12-byte usb_xferi.
+ * With no USB host, usb_pcm_read returns a silent 4-channel block and 0.
+ */
+struct rx3_usb_xferi {
+	long result;
+	void __user *buf;
+	long samples;
+};
 static long gadget_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-	return -ENOTTY;
+	struct rx3_usb_xferi x;
+	if (cmd != _IOR('B', 0x51, struct rx3_usb_xferi))
+		return -ENOTTY;
+	if (copy_from_user(&x, (void __user *)arg, sizeof(x)))
+		return -EFAULT;
+	if (x.samples < 0 || x.samples > 4096)
+		return -EINVAL;
+	if (clear_user(x.buf, x.samples * 16))
+		return -EFAULT;
+	x.result = 0;
+	return copy_to_user((void __user *)arg, &x, sizeof(x)) ? -EFAULT : 0;
 }
 
 static const struct file_operations gadget_fops = {

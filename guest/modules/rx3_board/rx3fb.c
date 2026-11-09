@@ -188,6 +188,17 @@ static int rx3fb_blank(int blank, struct fb_info *info)
 	return 0;
 }
 
+static int rx3fb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
+{
+	if (cmd != FBIO_WAITFORVSYNC)
+		return -ENOTTY;
+	/* DirectFB calls this from a high-priority display thread. A missing
+	 * vsync makes that thread spin and starve other firmware work.
+	 */
+	usleep_range(16000, 17000);
+	return 0;
+}
+
 static const struct fb_ops rx3fb_ops = {
 	.owner = THIS_MODULE,
 	/* Linux 6.6 has no FB_DEFAULT_SYSMEM_OPS yet. */
@@ -201,6 +212,7 @@ static const struct fb_ops rx3fb_ops = {
 	.fb_pan_display = rx3fb_pan_display,
 	.fb_setcolreg = rx3fb_setcolreg,
 	.fb_blank = rx3fb_blank,
+	.fb_ioctl = rx3fb_ioctl,
 };
 
 /* ---- /dev/tsc2007_2-0048 ------------------------------------------------ */
@@ -215,7 +227,11 @@ static int rx3fb_touch_thread(void *data)
 	while (!kthread_should_stop()) {
 		u32 seq = le32_to_cpu(READ_ONCE(p->touch->seq));
 
-		if (seq != last && !(seq & 1)) {
+		/* A held contact continues to produce ADC samples on the board.
+		 * rbp's TouchAdValueHysteresis discards the first contact sample;
+		 * forwarding only host position changes loses stationary clicks.
+		 */
+		if ((seq != last || READ_ONCE(p->ts.touch)) && !(seq & 1)) {
 			struct ts_data32 t = { 0 };
 			u32 x, y;
 
@@ -232,7 +248,7 @@ static int rx3fb_touch_thread(void *data)
 				t.x = p->ts.x;
 				t.y = p->ts.y;
 			}
-			if (memcmp(&t, &p->ts, sizeof(t))) {
+			if (t.touch || memcmp(&t, &p->ts, sizeof(t))) {
 				p->ts = t;
 				p->ts_detected = true;
 			}
